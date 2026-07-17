@@ -91,8 +91,13 @@ func (c InstanceConfig) Render() (string, error) {
 	if c.LocalBind != "" {
 		p("listen-host = %s", c.LocalBind)
 	}
+	// socket-file is the sec-mod base (ocserv suffixes it per worker).
+	// occtl-socket-file is the per-instance occtl control socket occtl connects
+	// to; without a distinct path every instance shares /var/run/occtl.socket.
+	// use-occtl must be true or the occtl socket is never served.
 	p("socket-file = %s", c.RunSocket)
 	p("occtl-socket-file = %s", c.OcctlSocket)
+	p("use-occtl = true")
 	p("device = %s", c.Device)
 	p("")
 

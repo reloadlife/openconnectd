@@ -1,0 +1,23 @@
+# openconnectd daemon config. Loopback-only by design: callers reach this over
+# 127.0.0.1; exposing it publicly hands out VPN admin with one token.
+
+listen: "127.0.0.1:51990"
+
+# Bearer token required on every request except /healthz. Leave empty to have
+# the daemon generate one on first boot and write it to token_file.
+token: ""
+token_file: "/etc/openconnectd/token"
+
+# ocserv tool binaries. Empty ⇒ resolved from PATH at call time.
+ocserv_bin: ""
+occtl_bin: ""
+ocpasswd_bin: ""
+
+# Directories the daemon owns.
+state_dir: "/var/lib/openconnectd/state"     # instance + client records
+config_dir: "/etc/openconnectd/instances"    # rendered ocserv.conf per instance
+pki_dir: "/var/lib/openconnectd/pki"          # CA + issued certs
+run_dir: "/run/openconnectd"                  # sockets
+
+# Prometheus exporter (loopback; scraped by the control-plane aggregator).
+metrics_listen: "127.0.0.1:9093"

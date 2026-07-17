@@ -1,0 +1,5 @@
+/openconnectd
+/dist/
+*.log
+*.test
+/tmp/

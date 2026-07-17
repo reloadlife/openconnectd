@@ -1,0 +1,20 @@
+[Unit]
+Description=openconnectd — ocserv (OpenConnect/AnyConnect) manager for networkingd
+Documentation=https://github.com/reloadlife/openconnectd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/openconnectd --config /etc/openconnectd/openconnectd.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+# Daemon binds loopback; it supervises ocserv, which needs net admin for the tun
+# device and packet forwarding.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+StandardOutput=append:/var/log/openconnectd.log
+StandardError=append:/var/log/openconnectd.log
+
+[Install]
+WantedBy=multi-user.target

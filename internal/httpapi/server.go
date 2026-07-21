@@ -52,6 +52,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/instances/{name}/clients/{cn}/client-config", s.auth(s.clientConfig))
 
 	mux.HandleFunc("GET /v1/sessions", s.auth(s.listSessions))
+
+	mux.HandleFunc("GET /v1/bans", s.auth(s.listBans))
+	mux.HandleFunc("DELETE /v1/bans/{ip}", s.auth(s.unban))
 	mux.HandleFunc("DELETE /v1/instances/{name}/sessions/{cn}", s.auth(s.disconnect))
 	return logging(s.log, mux)
 }
@@ -184,6 +187,25 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, sessions)
+}
+
+// --- bans ---
+
+func (s *Server) listBans(w http.ResponseWriter, r *http.Request) {
+	bans, err := s.mgr.Bans(r.Context())
+	if err != nil {
+		writeErr(w, statusFor(err), "bans", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, bans)
+}
+
+func (s *Server) unban(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.Unban(r.Context(), r.PathValue("ip")); err != nil {
+		writeErr(w, statusFor(err), "unban", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {

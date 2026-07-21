@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -137,3 +138,86 @@ func dtlsActive(cipher string) bool {
 	c := strings.ToLower(strings.TrimSpace(cipher))
 	return c != "" && c != "(none)" && c != "none"
 }
+
+// rawBan is one row of `occtl -j show ip bans` / `show ip ban points`.
+// Score is a JSON number in every version seen, but flexUint's tolerance costs
+// nothing and the field has already changed shape once across releases.
+type rawBan struct {
+	IP    string   `json:"IP"`
+	Since string   `json:"Since"`
+	Score flexUint `json:"Score"`
+}
+
+// ShowIPBans returns the IPs ocserv is currently refusing.
+func (o *Occtl) ShowIPBans(ctx context.Context, socket string) ([]api.Ban, error) {
+	out, err := o.run(ctx, socket, "show", "ip", "bans")
+	if err != nil {
+		return nil, err
+	}
+	return parseBans([]byte(out), true)
+}
+
+// ShowIPBanPoints returns IPs accruing score that are not blocked yet — the
+// early warning for a credential-stuffing run against one account.
+func (o *Occtl) ShowIPBanPoints(ctx context.Context, socket string) ([]api.Ban, error) {
+	out, err := o.run(ctx, socket, "show", "ip", "ban", "points")
+	if err != nil {
+		return nil, err
+	}
+	return parseBans([]byte(out), false)
+}
+
+// UnbanIP clears one address. occtl reports "could not unban" on an address it
+// is not holding; that is surfaced rather than swallowed so the UI cannot show
+// a successful unban that did nothing.
+func (o *Occtl) UnbanIP(ctx context.Context, socket, ip string) error {
+	if strings.TrimSpace(ip) == "" {
+		return fmt.Errorf("occtl: ip required")
+	}
+	out, err := o.run(ctx, socket, "unban", "ip", ip)
+	if err != nil {
+		return err
+	}
+	if strings.Contains(strings.ToLower(out), "could not unban") {
+		return fmt.Errorf("occtl: %s is not banned on this instance", ip)
+	}
+	return nil
+}
+
+// parseBans decodes an occtl ban list. banned marks which list it came from,
+// since the two share a shape but not a meaning.
+//
+// occtl emits a trailing comma before the closing bracket ("},\n]"), which is
+// not valid JSON and which encoding/json refuses outright. Stripping it is the
+// whole reason this is a function rather than a plain Unmarshal.
+func parseBans(out []byte, banned bool) ([]api.Ban, error) {
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return nil, nil
+	}
+	s = trailingCommaRE.ReplaceAllString(s, "$1")
+	if s == "[]" {
+		return nil, nil
+	}
+	var raw []rawBan
+	if err := json.Unmarshal([]byte(s), &raw); err != nil {
+		return nil, fmt.Errorf("occtl: parse ban list: %w", err)
+	}
+	bans := make([]api.Ban, 0, len(raw))
+	for _, r := range raw {
+		if strings.TrimSpace(r.IP) == "" {
+			continue
+		}
+		bans = append(bans, api.Ban{
+			IP:     r.IP,
+			Score:  int(r.Score),
+			Banned: banned,
+			Since:  strings.TrimSpace(r.Since),
+		})
+	}
+	return bans, nil
+}
+
+// trailingCommaRE matches a comma that is followed only by whitespace and a
+// closing bracket or brace.
+var trailingCommaRE = regexp.MustCompile(`,(\s*[\]}])`)

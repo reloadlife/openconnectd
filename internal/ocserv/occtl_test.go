@@ -84,3 +84,68 @@ func TestFlexUintForms(t *testing.T) {
 		}
 	}
 }
+
+// occtl's -j output for the ban lists is not valid JSON: it emits a trailing
+// comma before the closing bracket. encoding/json rejects it outright, so the
+// list has to be sanitised before parsing or the bans page is permanently
+// empty. Fixture copied verbatim from `occtl -j show ip bans` on thr-respina.
+func TestParseBansToleratesTrailingComma(t *testing.T) {
+	const raw = `[
+  {
+    "IP":  "62.220.114.104",
+    "Since":  "2026-07-21 23:05",
+    "_Since":  "   ?   ",
+    "Score":  54
+  },
+]`
+	got, err := parseBans([]byte(raw), true)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d bans, want 1", len(got))
+	}
+	if got[0].IP != "62.220.114.104" {
+		t.Errorf("IP = %q", got[0].IP)
+	}
+	if got[0].Score != 54 {
+		t.Errorf("Score = %d, want 54", got[0].Score)
+	}
+	if !got[0].Banned {
+		t.Error("Banned = false, want true for the ban list")
+	}
+	if got[0].Since != "2026-07-21 23:05" {
+		t.Errorf("Since = %q", got[0].Since)
+	}
+}
+
+// The points list has no Since and must be reported as not-yet-banned.
+func TestParseBanPoints(t *testing.T) {
+	const raw = `[
+  {
+    "IP":  "130.12.180.101",
+    "Score":  1
+  }
+]`
+	got, err := parseBans([]byte(raw), false)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got) != 1 || got[0].Banned {
+		t.Fatalf("got %+v, want one entry with Banned=false", got)
+	}
+}
+
+// An empty list must be empty, not an error — every instance reports this most
+// of the time and it must not surface as a broken node.
+func TestParseBansEmpty(t *testing.T) {
+	for _, in := range []string{"", "[]", "[\n]"} {
+		got, err := parseBans([]byte(in), true)
+		if err != nil {
+			t.Errorf("parse(%q): %v", in, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("parse(%q) = %v, want empty", in, got)
+		}
+	}
+}

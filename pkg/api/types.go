@@ -141,6 +141,21 @@ type Session struct {
 	SessionID    string    `json:"session_id,omitempty"`
 }
 
+// Ban is an IP ocserv is scoring or blocking. ocserv keeps two lists: IPs whose
+// score has crossed max-ban-score (Banned, connections refused) and IPs merely
+// accruing score from failed auth (Banned false). Both are read-only snapshots
+// from the control socket.
+type Ban struct {
+	IP           string `json:"ip"`
+	InstanceName string `json:"instance_name,omitempty"`
+	Score        int    `json:"score"`
+	Banned       bool   `json:"banned"`
+	// Since is occtl's human string ("2026-07-21 23:05"); it is the ban expiry
+	// clock, empty for score-only entries. Left as text because occtl renders it
+	// without a timezone and parsing it would invent one.
+	Since string `json:"since,omitempty"`
+}
+
 // CA is a certificate authority managed by the daemon.
 type CA struct {
 	Name    string     `json:"name"`

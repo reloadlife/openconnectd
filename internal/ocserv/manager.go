@@ -288,6 +288,80 @@ func (m *Manager) Sessions(ctx context.Context, instance string) ([]api.Session,
 	return out, nil
 }
 
+// Bans returns every scored or blocked IP across instances. Both occtl lists
+// are merged: an IP that is banned is reported once, as banned, since its score
+// appears in both.
+//
+// Unlike Sessions, a failing instance is reported rather than skipped. A ban
+// list is a security signal, and an empty table that silently means "could not
+// ask" would read as "nobody is being attacked".
+func (m *Manager) Bans(ctx context.Context) ([]api.Ban, error) {
+	var names []string
+	for _, in := range m.store.ListInstances() {
+		names = append(names, in.Name)
+	}
+	out := []api.Ban{}
+	var failed []string
+	for _, name := range names {
+		sock := m.occtlSocket(name)
+		seen := map[string]struct{}{}
+		bans, err := m.occtl.ShowIPBans(ctx, sock)
+		if err != nil {
+			m.log.Debug("occtl show ip bans", "instance", name, "err", err)
+			failed = append(failed, name)
+			continue
+		}
+		for _, b := range bans {
+			b.InstanceName = name
+			seen[b.IP] = struct{}{}
+			out = append(out, b)
+		}
+		points, err := m.occtl.ShowIPBanPoints(ctx, sock)
+		if err != nil {
+			// The ban list already succeeded, so the instance is up; a missing
+			// points list is a version difference, not an outage.
+			m.log.Debug("occtl show ip ban points", "instance", name, "err", err)
+			continue
+		}
+		for _, b := range points {
+			if _, dup := seen[b.IP]; dup {
+				continue
+			}
+			b.InstanceName = name
+			out = append(out, b)
+		}
+	}
+	if len(failed) > 0 && len(failed) == len(names) {
+		return out, fmt.Errorf("could not read ban list from any instance (%s)", strings.Join(failed, ", "))
+	}
+	return out, nil
+}
+
+// Unban clears an IP across every instance holding it. Callers name an address,
+// not an instance: ocserv scores per instance, so the same client can be banned
+// on more than one and unbanning only the first leaves it locked out.
+func (m *Manager) Unban(ctx context.Context, ip string) error {
+	if strings.TrimSpace(ip) == "" {
+		return fmt.Errorf("ip required")
+	}
+	cleared := 0
+	var lastErr error
+	for _, in := range m.store.ListInstances() {
+		if err := m.occtl.UnbanIP(ctx, m.occtlSocket(in.Name), ip); err != nil {
+			lastErr = err
+			continue
+		}
+		cleared++
+	}
+	if cleared == 0 {
+		if lastErr != nil {
+			return lastErr
+		}
+		return fmt.Errorf("%s is not banned", ip)
+	}
+	return nil
+}
+
 // Disconnect kicks a live session by common name on its instance.
 func (m *Manager) Disconnect(ctx context.Context, instance, cn string) error {
 	if _, ok := m.store.GetInstance(instance); !ok {

@@ -440,6 +440,12 @@ func (m *Manager) renderAndWrite(in api.Instance) error {
 	if err := os.MkdirAll(m.perUserDir(in.Name), 0o700); err != nil {
 		return err
 	}
+	// Rebuild the pins from the client store. They are derived state: a client
+	// provisioned before this existed already carries StaticIP on its record,
+	// so drift detection has nothing to converge and would never write the
+	// file. Rebuilding here is idempotent and self-heals a hand-edited or
+	// half-migrated directory.
+	m.syncPerUserConfigs(in.Name)
 	return os.WriteFile(m.configPath(in.Name), []byte(rendered), 0o600)
 }
 
@@ -493,39 +499,94 @@ func (m *Manager) perUserDir(instance string) string {
 	return filepath.Join(m.cfg.StateDir, instance+".per-user")
 }
 
-// perUserPath is the file ocserv reads for one client. ocserv looks the file up
-// by the exact username it authenticated, so the name must be the common name
-// verbatim; a separator would make it silently unreadable.
-func (m *Manager) perUserPath(instance, cn string) string {
-	return filepath.Join(m.perUserDir(instance), cn)
+// perUserPath is the file ocserv reads for one client.
+//
+// ocserv looks the file up by the exact username it authenticated, so the name
+// must be the common name verbatim — it cannot be hashed or escaped. The common
+// name arrives from the API unvalidated, and this value is a path component
+// written and removed as root, so anything that is not a bare filename is
+// rejected rather than sanitised: silently rewriting it would produce a file
+// ocserv never reads, which fails open as an unpinned address.
+func (m *Manager) perUserPath(instance, cn string) (string, error) {
+	if err := validPerUserName(cn); err != nil {
+		return "", err
+	}
+	return filepath.Join(m.perUserDir(instance), cn), nil
+}
+
+// validPerUserName rejects any common name that is not a single safe path
+// element.
+func validPerUserName(cn string) error {
+	if cn == "" {
+		return fmt.Errorf("common name required")
+	}
+	if cn == "." || cn == ".." {
+		return fmt.Errorf("invalid common name %q", cn)
+	}
+	if strings.ContainsAny(cn, `/\`) || strings.ContainsRune(cn, os.PathSeparator) {
+		return fmt.Errorf("invalid common name %q: path separators not allowed", cn)
+	}
+	if cn != filepath.Base(cn) || cn != filepath.Clean(cn) {
+		return fmt.Errorf("invalid common name %q", cn)
+	}
+	for _, r := range cn {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("invalid common name: control character")
+		}
+	}
+	return nil
 }
 
 // writePerUserConfig pins a client's address. An empty staticIP removes the
 // file so the client falls back to pool assignment rather than keeping a stale
 // pin that no longer matches what the control plane believes.
 func (m *Manager) writePerUserConfig(instance, cn, staticIP string) error {
-	if strings.TrimSpace(cn) == "" {
-		return nil
+	path, err := m.perUserPath(instance, cn)
+	if err != nil {
+		return err
 	}
-	path := m.perUserPath(instance, cn)
 	if strings.TrimSpace(staticIP) == "" {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return nil
 	}
+	// The address is interpolated into an ocserv config file. A value carrying
+	// a newline would inject directives ocserv then applies to the session, so
+	// it must parse as a bare IPv4 literal and nothing else.
+	ip := net.ParseIP(strings.TrimSpace(staticIP))
+	if ip == nil || ip.To4() == nil {
+		return fmt.Errorf("invalid static ip %q", staticIP)
+	}
 	if err := os.MkdirAll(m.perUserDir(instance), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(renderPerUserConfig(staticIP)), 0o600)
+	return os.WriteFile(path, []byte(renderPerUserConfig(ip.To4().String())), 0o600)
+}
+
+// syncPerUserConfigs writes one pin per client that has an address. A client
+// whose common name is not a safe filename is skipped and logged rather than
+// failing the render: one bad legacy record must not stop the instance from
+// starting, and an unpinned client is a degraded address, not an outage.
+func (m *Manager) syncPerUserConfigs(instance string) {
+	for _, c := range m.store.ListClients(instance) {
+		if strings.TrimSpace(c.StaticIP) == "" {
+			continue
+		}
+		if err := m.writePerUserConfig(instance, c.CommonName, c.StaticIP); err != nil {
+			m.log.Warn("pin static ip", "instance", instance,
+				"cn", c.CommonName, "err", err)
+		}
+	}
 }
 
 // removePerUserConfig drops a deleted client's pin.
 func (m *Manager) removePerUserConfig(instance, cn string) error {
-	if strings.TrimSpace(cn) == "" {
-		return nil
+	path, err := m.perUserPath(instance, cn)
+	if err != nil {
+		return err
 	}
-	if err := os.Remove(m.perUserPath(instance, cn)); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil

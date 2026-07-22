@@ -226,3 +226,96 @@ func TestClientStaticIPIsPinnedForOcserv(t *testing.T) {
 		t.Errorf("per-user config survived delete (err=%v)", err)
 	}
 }
+
+// The common name becomes a filename in the config-per-user directory, and it
+// arrives from the API unvalidated. Without a check, "../../../etc/foo" writes
+// (and DeleteClient removes) an arbitrary path as root.
+//
+// ocserv looks the file up by the exact username it authenticated, so the name
+// cannot be hashed or escaped — it has to be the literal common name, which
+// means the only safe move is to reject one that is not a bare filename.
+func TestPerUserPathRejectsTraversal(t *testing.T) {
+	m := testManager(t)
+	mkInstance(t, m, "oc-test", nil)
+
+	for _, cn := range []string{
+		"../evil",
+		"../../etc/cron.d/x",
+		"a/b",
+		`a\b`,
+		".",
+		"..",
+		"", // empty
+	} {
+		if err := m.writePerUserConfig("oc-test", cn, "10.20.0.5"); err == nil {
+			t.Errorf("writePerUserConfig(%q) accepted a non-filename common name", cn)
+		}
+		if err := m.removePerUserConfig("oc-test", cn); err == nil {
+			t.Errorf("removePerUserConfig(%q) accepted a non-filename common name", cn)
+		}
+	}
+
+	// The escape must not have produced a file anywhere.
+	if _, err := os.Stat(filepath.Join(filepath.Dir(m.perUserDir("oc-test")), "evil")); err == nil {
+		t.Error("traversal wrote a file outside the per-user directory")
+	}
+}
+
+// The pinned address is interpolated into an ocserv config file. A value
+// carrying a newline would inject arbitrary directives into that file, which
+// ocserv applies to the client's session.
+func TestPerUserConfigRejectsInjection(t *testing.T) {
+	m := testManager(t)
+	mkInstance(t, m, "oc-test", nil)
+
+	for _, ip := range []string{
+		"10.20.0.5\nroute = 0.0.0.0/0",
+		"10.20.0.5\r\nexplicit-ipv4 = 1.2.3.4",
+		"not-an-ip",
+		"10.20.0.5 ; rm -rf /",
+	} {
+		if err := m.writePerUserConfig("oc-test", "phone", ip); err == nil {
+			t.Errorf("writePerUserConfig accepted %q as an address", ip)
+		}
+	}
+}
+
+// The per-user directory is derived state and must be rebuilt from the client
+// store whenever the instance config is written.
+//
+// Without this, only clients created or patched after the feature shipped ever
+// get a pin: an existing client already has StaticIP on its record, so drift
+// detection sees nothing to converge and the file is never written. Every
+// client provisioned before the upgrade would keep a pool-assigned address
+// forever, which is exactly the state the pin exists to fix.
+func TestPerUserConfigsRebuiltOnRender(t *testing.T) {
+	m := testManager(t)
+	in := mkInstance(t, m, "oc-test", nil)
+	ctx := context.Background()
+
+	if _, err := m.CreateClient(ctx, "oc-test", api.ClientCreateRequest{
+		CommonName: "laptop-aa11bb",
+		AuthMode:   api.AuthCert,
+		StaticIP:   "10.20.0.12",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(m.perUserDir("oc-test"), "laptop-aa11bb")
+
+	// Simulate a client that predates the feature: record has the address, the
+	// pin file does not exist.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.renderAndWrite(*in); err != nil {
+		t.Fatalf("renderAndWrite: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("pin not rebuilt on render: %v", err)
+	}
+	if !strings.Contains(string(b), "explicit-ipv4 = 10.20.0.12") {
+		t.Errorf("rebuilt pin = %q", b)
+	}
+}

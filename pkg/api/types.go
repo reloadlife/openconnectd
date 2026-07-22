@@ -132,6 +132,10 @@ type Session struct {
 	CommonName   string    `json:"common_name"`
 	InstanceName string    `json:"instance_name,omitempty"`
 	VPNAddress   string    `json:"vpn_address,omitempty"` // assigned pool IP
+	// Device is the tun ocserv gave this connection. ocserv forks one worker
+	// (and one netdev) per client, so this is per-session, not per-instance —
+	// it is the only netdev a shaper for this client can attach to.
+	Device string `json:"device,omitempty"`
 	RemoteIP     string    `json:"remote_ip,omitempty"`   // client public IP
 	RxBytes      uint64    `json:"rx_bytes"`              // server← client
 	TxBytes      uint64    `json:"tx_bytes"`              // server→ client

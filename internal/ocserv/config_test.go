@@ -107,3 +107,37 @@ func TestFullTunnelWhenNoRoutes(t *testing.T) {
 		t.Errorf("no routes given ⇒ expected full tunnel, got explicit route:\n%s", out)
 	}
 }
+
+// A per-user config directory must be declared, otherwise ocserv ignores the
+// per-user files entirely and keeps assigning pool addresses in connect order.
+//
+// This is what makes a device's control-plane AssignedIP real. Everything the
+// control plane keys on that address — per-device egress, the fail-closed
+// egress guard, iran-direct, cross-node relay membership, plan speed limits —
+// silently matches nothing while ocserv is handing out its own addresses.
+func TestRenderDeclaresConfigPerUser(t *testing.T) {
+	c := baseCfg()
+	c.ConfigPerUserDir = "/var/lib/openconnectd/state/oc-sky-in.per-user"
+	out := mustRender(t, c)
+	if !strings.Contains(out, "config-per-user = /var/lib/openconnectd/state/oc-sky-in.per-user") {
+		t.Errorf("config-per-user not rendered:\n%s", out)
+	}
+}
+
+// Unset means unset: an instance with no per-user dir must not emit the
+// directive pointing at nothing, which makes ocserv fail to start.
+func TestRenderOmitsConfigPerUserWhenUnset(t *testing.T) {
+	out := mustRender(t, baseCfg())
+	if strings.Contains(out, "config-per-user") {
+		t.Errorf("config-per-user emitted without a directory:\n%s", out)
+	}
+}
+
+// The per-user file pins the address ocserv hands the client. "explicit-ipv4"
+// is the only directive that overrides pool assignment.
+func TestRenderPerUserConfigPinsAddress(t *testing.T) {
+	got := renderPerUserConfig("10.98.1.23")
+	if !strings.Contains(got, "explicit-ipv4 = 10.98.1.23") {
+		t.Errorf("per-user config = %q, want explicit-ipv4", got)
+	}
+}

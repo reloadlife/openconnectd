@@ -117,6 +117,7 @@ func parseSessions(raw []rawSession) []api.Session {
 		s := api.Session{
 			CommonName: r.Username,
 			VPNAddress: r.IPv4,
+			Device:     r.Device,
 			RemoteIP:   r.RemoteIP,
 			RxBytes:    uint64(r.RX),
 			TxBytes:    uint64(r.TX),

@@ -201,6 +201,11 @@ func (m *Manager) CreateClient(ctx context.Context, instance string, req api.Cli
 		}
 	}
 
+	// Pin (or clear) the address before persisting. PatchClient runs through
+	// here too, so a changed StaticIP converges instead of being create-only.
+	if err := m.writePerUserConfig(instance, cn, c.StaticIP); err != nil {
+		return nil, fmt.Errorf("pin static ip: %w", err)
+	}
 	if err := m.store.PutClient(instance, c); err != nil {
 		return nil, err
 	}
@@ -228,6 +233,9 @@ func (m *Manager) DeleteClient(instance, cn string) error {
 	if c.AuthMode == api.AuthPassword || c.AuthMode == api.AuthBoth {
 		_ = NewOcpasswd("", m.ocpasswdPath(instance)).DeleteUser(cn)
 	}
+	// Leaving the pin behind would hand a recycled address to whoever inherits
+	// the common name.
+	_ = m.removePerUserConfig(instance, cn)
 	return m.store.DeleteClient(instance, cn)
 }
 
@@ -251,6 +259,11 @@ func (m *Manager) PatchClient(ctx context.Context, instance, cn string, body map
 				return nil, fmt.Errorf("set password: %w", err)
 			}
 		}
+	}
+	// Pin (or clear) the address before persisting. PatchClient runs through
+	// here too, so a changed StaticIP converges instead of being create-only.
+	if err := m.writePerUserConfig(instance, cn, c.StaticIP); err != nil {
+		return nil, fmt.Errorf("pin static ip: %w", err)
 	}
 	if err := m.store.PutClient(instance, c); err != nil {
 		return nil, err
@@ -421,6 +434,12 @@ func (m *Manager) renderAndWrite(in api.Instance) error {
 	if err := os.MkdirAll(m.cfg.ConfigDir, 0o755); err != nil {
 		return err
 	}
+	// The rendered config names this directory. ocserv fails to start when
+	// config-per-user points at a path that does not exist, so create it even
+	// when no client has a pinned address yet.
+	if err := os.MkdirAll(m.perUserDir(in.Name), 0o700); err != nil {
+		return err
+	}
 	return os.WriteFile(m.configPath(in.Name), []byte(rendered), 0o600)
 }
 
@@ -448,8 +467,9 @@ func (m *Manager) instanceConfig(in api.Instance) (InstanceConfig, error) {
 		ServerKey:     m.pki.ServerKeyPath(in.Name),
 		OcctlSocket:   m.occtlSocket(in.Name),
 		RunSocket:     m.runSocket(in.Name),
-		Device:        tunName(in.Name),
-		DefaultDomain: hostOnly(in.PublicEndpoint),
+		Device:           tunName(in.Name),
+		ConfigPerUserDir: m.perUserDir(in.Name),
+		DefaultDomain:    hostOnly(in.PublicEndpoint),
 	}
 	if in.AuthMode == api.AuthCert || in.AuthMode == api.AuthBoth {
 		cfg.CACert = m.pki.CACertPath(in.Name)
@@ -466,6 +486,49 @@ func (m *Manager) occtlSocket(name string) string { return filepath.Join(m.cfg.R
 func (m *Manager) runSocket(name string) string   { return filepath.Join(m.cfg.RunDir, name+".sock") }
 func (m *Manager) ocpasswdPath(name string) string {
 	return filepath.Join(m.cfg.StateDir, name+".ocpasswd")
+}
+
+// perUserDir holds one ocserv config-per-user file per common name.
+func (m *Manager) perUserDir(instance string) string {
+	return filepath.Join(m.cfg.StateDir, instance+".per-user")
+}
+
+// perUserPath is the file ocserv reads for one client. ocserv looks the file up
+// by the exact username it authenticated, so the name must be the common name
+// verbatim; a separator would make it silently unreadable.
+func (m *Manager) perUserPath(instance, cn string) string {
+	return filepath.Join(m.perUserDir(instance), cn)
+}
+
+// writePerUserConfig pins a client's address. An empty staticIP removes the
+// file so the client falls back to pool assignment rather than keeping a stale
+// pin that no longer matches what the control plane believes.
+func (m *Manager) writePerUserConfig(instance, cn, staticIP string) error {
+	if strings.TrimSpace(cn) == "" {
+		return nil
+	}
+	path := m.perUserPath(instance, cn)
+	if strings.TrimSpace(staticIP) == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(m.perUserDir(instance), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(renderPerUserConfig(staticIP)), 0o600)
+}
+
+// removePerUserConfig drops a deleted client's pin.
+func (m *Manager) removePerUserConfig(instance, cn string) error {
+	if strings.TrimSpace(cn) == "" {
+		return nil
+	}
+	if err := os.Remove(m.perUserPath(instance, cn)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // OcctlSocket exposes the occtl socket path for the sessions layer (M2).

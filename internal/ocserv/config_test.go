@@ -141,3 +141,29 @@ func TestRenderPerUserConfigPinsAddress(t *testing.T) {
 		t.Errorf("per-user config = %q, want explicit-ipv4", got)
 	}
 }
+
+// Fronting ocserv with a relay must move CSTP only. If udp-port moves with it,
+// DTLS lands on a port nothing forwards and every client silently loses the
+// fast path.
+func TestRenderProxyProtoKeepsDTLSOnPublicPort(t *testing.T) {
+	c := baseCfg()
+	c.TCPPort = 8443
+	c.UDPPort = 443
+	c.ProxyProto = true
+	out := mustRender(t, c)
+
+	for _, w := range []string{"tcp-port = 8443", "udp-port = 443", "listen-proxy-proto = true"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("config missing %q\n---\n%s", w, out)
+		}
+	}
+	if strings.Contains(out, "listen-host") {
+		t.Error("listen-host must stay unset: it would move the UDP socket too")
+	}
+}
+
+func TestRenderNoProxyProtoByDefault(t *testing.T) {
+	if strings.Contains(mustRender(t, baseCfg()), "listen-proxy-proto") {
+		t.Error("proxy-proto leaked into a plain instance — direct clients would be rejected")
+	}
+}

@@ -20,6 +20,10 @@ type InstanceConfig struct {
 	TCPPort   int
 	UDPPort   int // 0 disables DTLS
 	LocalBind string
+	// ProxyProto expects a PROXY protocol header on every TCP connection.
+	// Only set it when a front proxy owns TCPPort — with it on, a direct
+	// client connection to TCPPort is rejected.
+	ProxyProto bool
 
 	PoolCIDR   string // "10.10.10.0/24"
 	PoolCIDRv6 string
@@ -94,6 +98,9 @@ func (c InstanceConfig) Render() (string, error) {
 	}
 	if c.LocalBind != "" {
 		p("listen-host = %s", c.LocalBind)
+	}
+	if c.ProxyProto {
+		p("listen-proxy-proto = true")
 	}
 	// socket-file is the sec-mod base (ocserv suffixes it per worker).
 	// occtl-socket-file is the per-instance occtl control socket occtl connects

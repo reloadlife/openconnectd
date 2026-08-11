@@ -66,6 +66,8 @@ func (m *Manager) CreateInstance(ctx context.Context, req api.InstanceCreateRequ
 		Name:           name,
 		Listen:         orString(req.Listen, ":443"),
 		DTLS:           boolOr(req.DTLS, true),
+		TCPPort:        req.TCPPort,
+		ProxyProto:     boolOr(req.ProxyProto, false),
 		PoolCIDR:       req.PoolCIDR,
 		PoolCIDRv6:     req.PoolCIDRv6,
 		PublicEndpoint: req.PublicEndpoint,
@@ -458,10 +460,16 @@ func (m *Manager) instanceConfig(in api.Instance) (InstanceConfig, error) {
 	if in.DTLS {
 		udp = port
 	}
+	// TCPPort moves CSTP only. DTLS deliberately stays on the Listen port so a
+	// relay can front TCP without taking the UDP fast path with it.
+	if in.TCPPort > 0 {
+		port = in.TCPPort
+	}
 	cfg := InstanceConfig{
 		Name:          in.Name,
 		TCPPort:       port,
 		UDPPort:       udp,
+		ProxyProto:    in.ProxyProto,
 		LocalBind:     in.LocalBind,
 		PoolCIDR:      in.PoolCIDR,
 		PoolCIDRv6:    in.PoolCIDRv6,
@@ -607,6 +615,12 @@ func applyInstancePatch(in *api.Instance, body map[string]any) {
 	}
 	if v, ok := body["dtls"].(bool); ok {
 		in.DTLS = v
+	}
+	if v, ok := body["tcp_port"].(float64); ok {
+		in.TCPPort = int(v)
+	}
+	if v, ok := body["proxy_proto"].(bool); ok {
+		in.ProxyProto = v
 	}
 	if v, ok := body["dns"].([]any); ok {
 		in.DNS = toStrings(v)

@@ -56,6 +56,20 @@ type Instance struct {
 	Listen string `json:"listen,omitempty"`
 	DTLS   bool   `json:"dtls"` // enable UDP/DTLS fast path alongside TCP
 
+	// TCPPort moves CSTP off the port in Listen while DTLS stays on it. Set
+	// this when something else owns the public TCP port — an SNI relay
+	// fronting :443, for example — and forwards to ocserv locally. Listening
+	// on a different address instead is not equivalent: listen-host also moves
+	// the UDP socket and would take DTLS down with it.
+	TCPPort int `json:"tcp_port,omitempty"`
+	// ProxyProto makes ocserv expect a PROXY protocol header on every TCP
+	// connection (listen-proxy-proto). It is mandatory when a relay fronts
+	// TCPPort — without it every session reports the relay's address, and
+	// bans, session lists, and per-client policy all key on the wrong IP.
+	// It also means nothing may reach TCPPort except that relay: a direct
+	// connection has no header and is rejected.
+	ProxyProto bool `json:"proxy_proto,omitempty"`
+
 	// PoolCIDR is the client address pool, e.g. "10.10.10.0/24".
 	PoolCIDR   string `json:"pool_cidr,omitempty"`
 	PoolCIDRv6 string `json:"pool_cidr_v6,omitempty"`
@@ -85,6 +99,8 @@ type InstanceCreateRequest struct {
 	Name           string      `json:"name"`
 	Listen         string      `json:"listen"` // ":443" default if empty
 	DTLS           *bool       `json:"dtls,omitempty"`
+	TCPPort        int         `json:"tcp_port,omitempty"`
+	ProxyProto     *bool       `json:"proxy_proto,omitempty"`
 	PoolCIDR       string      `json:"pool_cidr,omitempty"`
 	PoolCIDRv6     string      `json:"pool_cidr_v6,omitempty"`
 	PublicEndpoint string      `json:"public_endpoint,omitempty"`

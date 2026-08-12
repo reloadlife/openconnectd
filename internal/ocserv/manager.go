@@ -142,6 +142,7 @@ func (m *Manager) PatchInstance(name string, body map[string]any) (*api.Instance
 	if !ok {
 		return nil, fmt.Errorf("instance %q not found", name)
 	}
+	before := in
 	applyInstancePatch(&in, body)
 	if err := m.renderAndWrite(in); err != nil {
 		return nil, err
@@ -150,7 +151,17 @@ func (m *Manager) PatchInstance(name string, body map[string]any) (*api.Instance
 		return nil, err
 	}
 	if in.Enabled {
-		if err := m.startInstance(in); err == nil {
+		// A reload is SIGHUP, and ocserv does not rebind its listeners on
+		// SIGHUP. Changing a port and reloading leaves the process serving the
+		// OLD port with a config that says otherwise — which reads as "the
+		// change did not apply" and, mid-cutover, as a port that never frees.
+		// Anything touching the listeners has to be a real restart.
+		if listenersDiffer(before, in) {
+			_ = m.sup.Stop(name)
+			if err := m.startInstance(in); err != nil {
+				return nil, err
+			}
+		} else if err := m.startInstance(in); err == nil {
 			_ = m.sup.Reload(name) // pick up config changes without a drop
 		}
 	} else {
@@ -718,4 +729,14 @@ func boolOr(p *bool, def bool) bool {
 		return def
 	}
 	return *p
+}
+
+// listenersDiffer reports whether a patch changed anything ocserv only picks up
+// by rebinding: the ports, the bind address, or the DTLS socket.
+func listenersDiffer(a, b api.Instance) bool {
+	return a.Listen != b.Listen ||
+		a.TCPPort != b.TCPPort ||
+		a.DTLS != b.DTLS ||
+		a.LocalBind != b.LocalBind ||
+		a.ProxyProto != b.ProxyProto
 }

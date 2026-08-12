@@ -167,3 +167,25 @@ func TestRenderNoProxyProtoByDefault(t *testing.T) {
 		t.Error("proxy-proto leaked into a plain instance — direct clients would be rejected")
 	}
 }
+
+// A port change must not be applied with SIGHUP: ocserv does not rebind on
+// reload, so it would keep serving the old port while its config claims the
+// new one. Mid-cutover that reads as a port that never frees.
+func TestListenersDifferDetectsPortAndProxyChanges(t *testing.T) {
+	base := api.Instance{Name: "x", Listen: ":443", DTLS: true}
+	same := base
+	if listenersDiffer(base, same) {
+		t.Error("identical instances reported as differing — every patch would hard-restart")
+	}
+	for name, mut := range map[string]func(api.Instance) api.Instance{
+		"tcp_port":    func(i api.Instance) api.Instance { i.TCPPort = 9444; return i },
+		"proxy_proto": func(i api.Instance) api.Instance { i.ProxyProto = true; return i },
+		"listen":      func(i api.Instance) api.Instance { i.Listen = ":8443"; return i },
+		"dtls":        func(i api.Instance) api.Instance { i.DTLS = false; return i },
+		"local_bind":  func(i api.Instance) api.Instance { i.LocalBind = "10.0.0.1"; return i },
+	} {
+		if !listenersDiffer(base, mut(base)) {
+			t.Errorf("%s change not detected — would be reloaded, not restarted", name)
+		}
+	}
+}
